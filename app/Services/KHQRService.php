@@ -2,59 +2,84 @@
 
 namespace App\Services;
 
+use Exception;
+use InvalidArgumentException;
 use Piseth\BakongKhqr\BakongKHQR;
-use Piseth\BakongKhqr\Models\MerchantInfo;
+use Piseth\BakongKhqr\Models\IndividualInfo;
 
 class KHQRService
 {
+    /**
+     * Generate dynamic Individual KHQR string and MD5.
+     */
     public function generate(
         string $accountId,
         string $merchantName,
         string $merchantCity,
         float $amount,
-        int $currencyCode = 840 // Default to USD
+        int $currencyCode = 840 // 840 = USD, 116 = KHR
     ): array {
-        // For POS Systems, banking apps (like ABA Mobile) strictly require a
-        // Corporate Merchant KHQR (Tag 30). Individual KHQR (Tag 29) is often rejected
-        // during POS scans. We will use the package's generateMerchant method.
-        
-        $merchantInfo = new \Piseth\BakongKhqr\Models\MerchantInfo(
-            $accountId,      // bakongAccountID (SubTag 00)
-            $merchantName,   // merchantName
-            $merchantCity,   // merchantCity
-            $accountId,      // merchantID (SubTag 01)
-            'Bakong'         // acquiringBank (SubTag 02)
+        $individualInfo = new IndividualInfo(
+            $accountId,      // e.g. name@bkrt
+            $merchantName,   // Display name
+            $merchantCity    // e.g. Phnom Penh
         );
-        
-        $merchantInfo->amount = (float) $amount;
-        $merchantInfo->currency = (int) $currencyCode;
-        
-        $response = \Piseth\BakongKhqr\BakongKHQR::generateMerchant($merchantInfo);
-        
-        // The package returns a KHQRResponse object containing 'data'
-        $data = (array) $response->data;
+
+        $individualInfo->amount = (float) $amount;
+        $individualInfo->currency = (int) $currencyCode;
+
+        // Generate KHQR
+        $response = BakongKHQR::generateIndividual($individualInfo);
+
+        // Package uses getData() to retrieve the associative array
+        $data = method_exists($response, 'getData') ? $response->getData() : (array) ($response->data ?? []);
+        $qrString = $data['qr'] ?? null;
+
+        if (!$qrString) {
+            throw new Exception('Failed to generate KHQR string.');
+        }
+
+        // The MD5 used to check transactions is the MD5 hash of the raw QR string
+        $md5 = $data['md5'] ?? md5($qrString);
 
         return [
             'status' => ['code' => 0, 'message' => 'Success'],
             'data'   => [
-                'qr'  => $data['qr'] ?? null,
-                'md5' => $data['md5'] ?? null,
+                'qr'           => $qrString,
+                'md5'          => $md5,
+                'qr_image_url' => $data['qrImageUrl'] ?? null,
             ],
         ];
     }
 
+    /**
+     * Check transaction settlement status by MD5.
+     */
     public function verify(string $md5): array
     {
-        $token = config('bakong.token');
+        // Check config/services.php first, then fallback to config/bakong.php
+        $token = config('services.bakong.token') ?? config('bakong.token');
 
         if (!$token) {
-            throw new \InvalidArgumentException(
-                'Bakong token is not configured.'
-            );
+            throw new InvalidArgumentException('Bakong API token is not configured.');
         }
 
         $bakong = new BakongKHQR($token);
 
-        return $bakong->checkTransactionByMD5($md5);
+        try {
+            $response = $bakong->checkTransactionByMD5($md5);
+
+            if ($response && method_exists($response, 'getData')) {
+                return $response->getData();
+            }
+
+            return (array) $response;
+        } catch (Exception $e) {
+            return [
+                'responseCode'    => 1,
+                'responseMessage' => $e->getMessage(),
+                'data'            => null,
+            ];
+        }
     }
 }
