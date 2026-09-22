@@ -32,7 +32,7 @@ class KHQRService
         $response = BakongKHQR::generateIndividual($individualInfo);
 
         // Package uses getData() to retrieve the associative array
-        $data = method_exists($response, 'getData') ? $response->getData() : (array) ($response->data ?? []);
+        $data = (is_object($response) && method_exists($response, 'getData')) ? $response->getData() : (array) ($response->data ?? (is_array($response) ? $response : []));
         $qrString = $data['qr'] ?? null;
 
         if (!$qrString) {
@@ -69,7 +69,7 @@ class KHQRService
         try {
             $response = $bakong->checkTransactionByMD5($md5);
 
-            if ($response && method_exists($response, 'getData')) {
+            if (is_object($response) && method_exists($response, 'getData')) {
                 return $response->getData();
             }
 
